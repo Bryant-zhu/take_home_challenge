@@ -1,0 +1,629 @@
+---
+title: "Tencent Data Challenge"
+author: "Lixiang Zhu"
+output: 
+  flexdashboard::flex_dashboard:
+    social: menu
+    source_code: embed
+---
+
+```{r setup, include=FALSE}
+
+
+ 
+library(tidyverse)
+library(highcharter)
+library(leaflet)
+library(lubridate)
+library(flexdashboard)
+gc()
+
+ 
+dir <-getwd()
+
+mydata <-
+  read_csv(
+    paste(dir,"/topline_metrics.csv",sep = "")
+  ) %>% distinct()
+
+
+
+#read country boundary
+WorldCountry <-
+  geojsonio::geojson_read(
+    paste(dir,"/countries.geo.json",sep = ""),
+    what = "sp"
+  )
+
+
+
+time_spent <- mydata %>% filter(year(Date) == 2019) %>%
+  group_by(Country) %>%
+  summarise(time_spend = mean(`Time Spend Per Day(seconds)`))
+
+
+## find correct country name for boundary data
+## using Regular expression
+get_Name <- function(country) {
+  country <- unlist(str_split(country, "\\("))[1]
+  correct_name <-
+    WorldCountry$name[str_detect(WorldCountry$name, pattern = country)]
+  if (length(correct_name) > 0) {
+    return(correct_name[1])
+  } else {
+    return(NA)
+  }
+}
+
+
+### matching tencent data with existing map data which has boundary data
+
+time_spent <- na.omit(time_spent %>% group_by(Country) %>%
+                        mutate(newname = get_Name(Country))) %>% arrange(newname)
+time_spent <- time_spent[!duplicated(time_spent$newname), ]
+time_spent$rown <- 1:nrow(time_spent)
+
+data_Map <- WorldCountry[WorldCountry$name %in% time_spent$newname,]
+df_data_Map <-
+  data.frame(data_Map) %>% left_join(time_spent, by = c("name" = "newname"))
+data_Map$val <- time_spent$time_spend[df_data_Map$rown]
+data_Map$con <- time_spent$Country[df_data_Map$rown]
+
+
+
+
+bins <- c(0, 80, 90, 100, 110, 120, 130, 150, 180, Inf)
+pal <- colorBin("YlOrRd", domain = data_Map$val, bins = bins)
+
+labels <- sprintf("<strong>%s</strong><br/>%g s/Day",
+                  data_Map$con,
+                  data_Map$val) %>% lapply(htmltools::HTML)
+
+
+
+P_world_avg_time_spent <- leaflet(data_Map) %>% addTiles() %>%
+  setView(zoom = 1.5, lat = 23, lng =  72) %>%
+  addPolygons(
+    fillColor = ~ pal(val),
+    weight = 1.5,
+    opacity = 0.6,
+    color = "white",
+    dashArray = "1",
+    fillOpacity = 0.7,
+    highlight = highlightOptions(
+      weight = 2,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 0.5,
+      bringToFront = TRUE
+    ),
+    label = labels,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto"
+    )
+  ) %>% addLegend(
+    pal = pal,
+    values = ~ val,
+    title = paste("Average Time Spend<br>", " In 2019(Second)"),
+    opacity = 0.7,
+    position = "bottomleft"
+  )
+
+
+
+
+
+
+
+time_perspective <-
+  mydata %>% mutate(yymm = format(Date, "%Y-%m")) %>% group_by(yymm, Platform) %>%
+  summarise(
+    avg_dau = mean(DAU),
+    avg_item_per_dau = mean(`Items per DAU`),
+    avg_conversion = mean(Conversion),
+    avg_tru = mean(TRU),
+    avg_time = mean(`Time Spend Per Day(seconds)`)
+  )
+
+time_perspective <-
+  time_perspective %>% select(yymm, Platform, avg_time) %>%
+  spread(key = Platform, value = avg_time)
+
+### get growth rate
+time <-
+  mydata %>% mutate(yymm = format(Date, "%Y-%m")) %>% group_by(yymm) %>%
+  summarise(
+    avg_dau = mean(DAU),
+    avg_item_per_dau = mean(`Items per DAU`),
+    avg_conversion = mean(Conversion),
+    avg_tru = mean(TRU),
+    avg_time = mean(`Time Spend Per Day(seconds)`)
+  )
+
+
+time <-
+  time %>% mutate(avg_time_growth = round(100 * (avg_time - lag(avg_time)) /
+                                            lag(avg_time), 2)) %>%
+  mutate(avg_time_growth = replace_na(avg_time_growth, 0))
+
+
+
+P_monthly_avg_time_spent <- highchart() %>%
+  hc_xAxis(categories = time_perspective$yymm) %>%
+  hc_add_series(
+    name = "Monthly Growth Rate(%)",
+    data = time$avg_time_growth,
+    yAxis = 1 ,
+    type = "column"
+  ) %>%
+  hc_add_series(name = "ALL",
+                data = time_perspective$ALL,
+                type = "spline") %>%
+  hc_add_series(name = "Android",
+                data = time_perspective$`Android(All)`,
+                type = "spline") %>%
+  hc_add_series(name = "IOS",
+                data = time_perspective$`IOS(All)` ,
+                type = "spline") %>%
+  
+  hc_add_theme(hc_theme_elementary()) %>%
+  hc_title(
+    text = "Average Time Spend On Different Platform",
+    margin = 20,
+    align = "left",
+    style = list(color = "red", useHTML = TRUE)
+  ) %>%
+  hc_yAxis_multiples(
+    list(
+      title = list(text = "Time Spend(s)"),
+      min = min(time_perspective$`IOS(All)`),
+      labels = list(format = "{value} "),
+      showLastLabel = FALSE
+    ),
+    list(
+      title = list(text = "Growth Rate(%)"),
+      min = min(time$avg_time_growth) ,
+      labels = list(format = '{value}%'),
+      showLastLabel = FALSE,
+      opposite = TRUE
+    )
+  )
+
+
+
+####################### growth of DAU
+
+time_perspective <-
+  mydata %>% mutate(yymm = format(Date, "%Y-%m")) %>% group_by(yymm, Platform) %>%
+  summarise(
+    avg_dau = mean(DAU),
+    avg_item_per_dau = mean(`Items per DAU`),
+    avg_conversion = mean(Conversion),
+    avg_tru = mean(TRU),
+    avg_time = mean(`Time Spend Per Day(seconds)`)
+  )
+
+time_perspective <-
+  time_perspective %>% select(yymm, Platform, avg_dau) %>%
+  spread(key = Platform, value = avg_dau)
+
+### get growth rate
+time <-
+  mydata %>% mutate(yymm = format(Date, "%Y-%m")) %>% group_by(yymm) %>%
+  summarise(
+    avg_dau = mean(DAU),
+    avg_item_per_dau = mean(`Items per DAU`),
+    avg_conversion = mean(Conversion),
+    avg_tru = mean(TRU),
+    avg_time = mean(`Time Spend Per Day(seconds)`)
+  )
+
+
+time <-
+  time %>% mutate(avg_time_growth = round(100 * (avg_dau - lag(avg_dau)) /
+                                            lag(avg_dau), 2)) %>%
+  mutate(avg_dau_growth = replace_na(avg_time_growth, 0))
+
+
+
+
+P_DAU_avg <- highchart() %>%
+  hc_xAxis(categories = time_perspective$yymm) %>%
+  hc_add_series(name = "ALL",
+                data = time_perspective$ALL,
+                type = "column") %>%
+  hc_add_series(name = "Android",
+                data = time_perspective$`Android(All)`,
+                type = "column") %>%
+  hc_add_series(name = "IOS",
+                data = time_perspective$`IOS(All)` ,
+                type = "column") %>%
+  hc_add_series(
+    name = "Monthly Growth Rate(%)",
+    data = time$avg_dau_growth,
+    yAxis = 1 ,
+    type = "spline"
+  ) %>%
+  hc_plotOptions(column = list(stacking = "normal")) %>%
+  hc_title(
+    text = "Daily Active User On Different Platform",
+    margin = 20,
+    align = "left",
+    style = list(color = "red", useHTML = TRUE)
+  ) %>%
+  hc_yAxis_multiples(
+    list(
+      title = list(text = "DAU(Daily Active User)"),
+      labels = list(format = "{value} "),
+      showLastLabel = FALSE
+    ),
+    list(
+      title = list(text = "Growth Rate(%)"),
+      min = min(time$avg_dau_growth) ,
+      labels = list(format = '{value}%'),
+      showLastLabel = FALSE,
+      opposite = TRUE
+    )
+  )%>%hc_add_theme(hc_theme_elementary())
+
+########### Scatter plot
+
+top_country <-
+  mydata %>% filter(format(Date, "%Y-%m") == "2020-02") %>% group_by(Country) %>%
+  summarise(
+    avg_dau = mean(DAU),
+    avg_item_per_dau = mean(`Items per DAU`),
+    avg_return = mean(`Return Customer`),
+    avg_time = mean(`Time Spend Per Day(seconds)`),
+    avg_conversion = mean(Conversion),
+    avg_tran = mean(Trans),
+    tran_per_dau = mean(Trans / DAU)
+  )%>%arrange(-avg_dau)
+
+top_country<-top_country[1:50,]
+
+P_country_scatter <- hchart(
+  top_country,
+  "scatter",
+  hcaes(
+    x = avg_return,
+    y = avg_time,
+    color = avg_dau,
+    f = Country,
+    size = avg_dau
+  ),
+  showInLegend = FALSE,
+  dataLabels = list(enabled = TRUE, format = '{point.f}'),
+  maxSize = "7%"
+) %>%
+  hc_title(
+    text = "Returned User VS Average Time Spend Last Month",
+    margin = 20,
+    align = "left",
+    style = list(color = "red", useHTML = TRUE)
+  ) %>%
+  hc_legend(align = "right",
+            verticalAlign = "top",
+            layout = "vertical") %>% hc_add_theme(hc_theme_elementary())
+ 
+
+
+####################  Monitization chart 
+
+Country_trans_ratio<-mydata%>%filter(year(Date)==2019)%>%
+  group_by(Country)%>%
+  summarise(total_trans = round(sum(Trans)/1000000,2),tran_per_dau = round(sum(Trans)/sum(DAU),2),
+            avg_cash=mean(`Cash Flow`),avg_conversion = mean(Conversion) )
+
+
+## normalize total trans for plotting 
+#Country_trans_ratio$total_trans<-  rescale(Country_trans_ratio$total_trans,c(0,10))
+
+
+get_Name <- function(country) {
+  country <- unlist(str_split(country, "\\("))[1]
+  correct_name <-
+    WorldCountry$name[str_detect(WorldCountry$name, pattern = country)]
+  if (length(correct_name) > 0) {
+    return(correct_name[1])
+  } else {
+    return(NA)
+  }
+}
+
+
+### matching tencent data with existing map data which has boundary data
+
+Country_trans_ratio <- na.omit(Country_trans_ratio %>% group_by(Country) %>%
+                                 mutate(newname = get_Name(Country))) %>% arrange(newname)
+Country_trans_ratio <- Country_trans_ratio[!duplicated(Country_trans_ratio$newname), ]
+Country_trans_ratio$rown <- 1:nrow(Country_trans_ratio)
+
+data_Map <- WorldCountry[WorldCountry$name %in% Country_trans_ratio$newname,]
+
+df_data_Map <-
+  data.frame(data_Map) %>% left_join(Country_trans_ratio, by = c("name" = "newname"))
+data_Map$val <- Country_trans_ratio$tran_per_dau[df_data_Map$rown]
+data_Map$con <- Country_trans_ratio$Country[df_data_Map$rown]
+ 
+
+
+
+#bins <- c(0,2.8,2.9,3,3.1,4,6,20, Inf)
+
+bins <- c(0,0.1,0.2,0.22,0.23,0.3,0.4,0.6)
+pal <- colorBin("YlOrRd", domain = data_Map$val, bins = bins)
+
+labels <- sprintf("<strong>%s</strong><br/>%g ",
+                  data_Map$con,
+                  data_Map$val) %>% lapply(htmltools::HTML)
+
+
+
+P_world_trans_ratio <- leaflet(data_Map) %>% addTiles() %>%
+  setView(zoom = 1.5, lat = 23, lng =  72) %>%
+  addPolygons(
+    fillColor = ~ pal(val),
+    weight = 1.5,
+    opacity = 0.6,
+    color = "white",
+    dashArray = "1",
+    fillOpacity = 0.7,
+    highlight = highlightOptions(
+      weight = 2,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 0.5,
+      bringToFront = TRUE
+    ),
+    label = labels,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto"
+    )
+  ) %>% addLegend(
+    pal = pal,
+    values = ~ val,
+    title = paste("Transactions Per DAU", "In 2019",sep = ""),
+    opacity = 0.7,
+    position = "bottomleft"
+  )
+
+#### Monthly Transaction 
+
+ 
+ 
+monitizaion_growth <-
+  mydata %>% mutate(yymm = format(Date, "%Y-%m")) %>% group_by(yymm) %>%
+  summarise(total_trans = round(sum(Trans)/1000000,2),
+            tran_per_dau = round(sum(Trans)/sum(DAU),2),
+            avg_cash=mean(`Cash Flow`),avg_conversion = mean(Conversion) 
+  )
+
+P_monthly_Transaction <- highchart() %>%
+  hc_xAxis(categories = monitizaion_growth$yymm) %>%
+  hc_add_series(
+    name = "Monthly Total Transaction",
+    data = monitizaion_growth$total_trans,
+    type = "column"
+  ) %>%
+  hc_add_series(name = "Trans/DAU",
+                data = monitizaion_growth$tran_per_dau,
+                yAxis = 1 ,
+                type = "spline")  %>%
+  hc_add_theme(hc_theme_elementary()) %>%
+  hc_title(
+    text = "Monthly Transaction From 2018",
+    margin = 20,
+    align = "left",
+    style = list(color = "red", useHTML = TRUE)
+  ) %>%
+  hc_yAxis_multiples(
+    list(
+      title = list(text = "(Million)"),
+      min = min(monitizaion_growth$total_trans),
+      labels = list(format = "{value}"),
+      showLastLabel = FALSE
+    ),
+    list(
+      title = list(text = "Tran / DAU "),
+      min = min(monitizaion_growth$tran_per_dau) ,
+      labels = list(format = '{value}'),
+      showLastLabel = FALSE,
+      opposite = TRUE
+    )
+  )
+
+######  Monthly Conversion
+
+
+
+
+
+Platform_converstion<-mydata%>% mutate(yymm = format(Date, "%Y-%m")) %>% group_by(yymm, Platform) %>%
+  summarise(total_trans = round(sum(Trans)/1000000,2),tran_per_dau = round(sum(Trans)/sum(DAU),2),
+            avg_cash=mean(`Cash Flow`),avg_conversion = mean(Conversion) )
+
+
+ 
+
+Platform_converstion<-Platform_converstion%>%select(yymm,Platform,avg_conversion)%>%spread(key = Platform,value =  avg_conversion)
+
+
+### calcaulate overall growth monthly for conversion 
+overall_conversion<-mydata%>% mutate(yymm = format(Date, "%Y-%m")) %>%
+  group_by(yymm) %>%summarise(avg_conversion = mean(Conversion) )
+
+overall_conversion<-overall_conversion%>%
+  mutate(conversion_growth = replace_na(round(100*(avg_conversion-lag(avg_conversion)
+                                                     )/lag(avg_conversion),2),0))
+
+
+P_Monthly_conversion<- highchart() %>%
+  hc_xAxis(categories = Platform_converstion$yymm) %>%
+  hc_add_series(
+    name = "Monthly Growth Rate(%)",
+    data = overall_conversion$conversion_growth,
+    yAxis = 1 ,
+    type = "column"
+  ) %>%
+  hc_add_series(name = "ALL",
+                data = Platform_converstion$ALL,
+                type = "spline") %>%
+  hc_add_series(name = "Android",
+                data = Platform_converstion$`Android(All)`,
+                type = "spline") %>%
+  hc_add_series(name = "IOS",
+                data = Platform_converstion$`IOS(All)` ,
+                type = "spline") %>%
+  
+  hc_add_theme(hc_theme_elementary()) %>%
+  hc_title(
+    text = "Average Conversion On Different Platform",
+    margin = 20,
+    align = "left",
+    style = list(color = "red", useHTML = TRUE)
+  ) %>%
+  hc_yAxis_multiples(
+    list(
+      title = list(text = "Conversion Rate"),
+      min = min(overall_conversion$avg_conversion),
+      labels = list(format = "{value} "),
+      showLastLabel = FALSE
+    ),
+    list(
+      title = list(text = "Growth Rate(%)"),
+      min = min(overall_conversion$conversion_growth) ,
+      labels = list(format = '{value}%'),
+      showLastLabel = FALSE,
+      opposite = TRUE
+    )
+  )
+
+
+
+
+### trans_vs_time chart
+
+
+
+monetization<- mydata %>% filter(format(Date, "%Y-%m") == "2020-02") %>% group_by(Country)%>%
+  summarise(total_trans = round(sum(Trans)/1000,2),tran_per_dau = round(sum(Trans)/sum(DAU),2),
+            avg_cash=mean(`Cash Flow`),avg_Items = mean(Items),avg_item_dau = mean(`Items per DAU`),
+            avg_time_spend = mean(`Time Spend Per Day(seconds)`),
+            avg_dau = mean(DAU))%>%arrange(-total_trans)
+
+
+##top 50    
+monetization<-monetization[1:50,]
+
+
+
+P_trans_vs_time<-  hchart(
+  monetization,
+  "scatter",
+  hcaes(
+    x = avg_time_spend,
+    y = total_trans, 
+    color = tran_per_dau,
+    f = Country,
+    size = tran_per_dau
+  ),
+  showInLegend = FALSE,
+  dataLabels = list(enabled = TRUE, format = '{point.f}'),
+  maxSize = "7%"
+) %>%
+  hc_title(
+    text = "Average Time Spend VS Total Transcation Last Month",
+    margin = 20,
+    align = "left",
+    style = list(color = "red", useHTML = TRUE)
+  ) %>%
+  hc_legend(align = "right",
+            verticalAlign = "top",
+            layout = "vertical") %>% hc_add_theme(hc_theme_elementary())
+
+ 
+
+```
+
+Engagement 
+=======================================================================
+
+ 
+Column {data-width=550}
+-------------------------------------
+ 
+
+### Average Daily Time Spend (second) for all country in 2019 
+
+```{r}
+P_world_avg_time_spent
+```
+
+### Scatter Plot for Top 50 DAU country  Last Month(2020-02)
+```{r}
+P_country_scatter
+```
+ 
+
+Column {data-width=450}
+-------------------------------------
+
+ 
+### Daily Active Users On Different Platform
+
+```{r}
+P_DAU_avg
+```   
+    
+### Average Time Spend On Different Platform
+
+```{r}
+
+```{r}
+P_monthly_avg_time_spent
+```
+
+
+
+
+
+
+Monetization
+=======================================================================
+
+Column {data-width=550}
+-------------------------------------
+ 
+
+### Average Transactions Per DAU In 2019
+
+```{r}
+P_world_trans_ratio
+```
+
+
+### Average Time vs Total Trasaction  for Top 50 Trans country Last Month
+ 
+```{r}
+P_trans_vs_time
+```
+
+Column {data-width=450}
+-------------------------------------
+
+### Monthly  Transaction
+
+```{r}
+P_monthly_Transaction
+```
+
+### Monthly  conversion
+
+```{r}
+P_Monthly_conversion
+``` 
