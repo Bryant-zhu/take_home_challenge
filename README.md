@@ -8,5 +8,6 @@ There were two parts in Dashboard , engagement and  monetization. As shown in th
 
 
 ## 03-clustering
-For 03-clustering , both jupyter notebook or HTML file should both work.
+For 03-clustering , code is in jupyter notebook.
+   and clustering result is in **HTML file** , to download the file and open in in local browser. 
    For 03, it was developed in python with sklearn and pandas.
